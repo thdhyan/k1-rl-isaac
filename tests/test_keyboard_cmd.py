@@ -18,10 +18,10 @@ import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE_PATH = (
-    _ROOT / "isaac_tasks/k1_velocity/scripts/keyboard_cmd.py"
+    _ROOT / "scripts/keyboard_cmd.py"
 )
-_PLAY = _ROOT / "isaac_tasks/k1_velocity/scripts/play_keyboard_fixed.py"
-PLAY = _ROOT / "isaac_tasks/k1_velocity/scripts/play.py"
+_PLAY = _ROOT / "scripts/play_keyboard_fixed.py"
+PLAY = _ROOT / "scripts/play.py"
 
 
 def _load():

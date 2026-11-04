@@ -18,7 +18,7 @@ import pathlib
 import re
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-PUSH = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/push"
+PUSH = _ROOT / "src/k1_velocity/tasks/push"
 SG_CFG = PUSH / "push_sg_env_cfg.py"
 SG_MDP = PUSH / "push_rewards_sg.py"
 INIT = PUSH / "__init__.py"
@@ -197,7 +197,7 @@ def test_sg_cfg_imports_configclass_the_way_the_working_sibling_does():
 
 def test_sg_cfg_registers_the_push_family_for_hydra_resolution():
     """hydra_task_config -> load_cfg_from_registry imports the cfg module by string path."""
-    init = (_ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/push/__init__.py")
+    init = (_ROOT / "src/k1_velocity/tasks/push/__init__.py")
     src = init.read_text()
     for cls in ("K1PushSGPlayEnvCfg", "K1PushReachSGPlayEnvCfg"):
         assert f"push_sg_env_cfg:{cls}" in src, f"{cls} is registered but unreachable by path"

@@ -25,7 +25,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-PUSH = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/push"
+PUSH = _ROOT / "src/k1_velocity/tasks/push"
 MOD = PUSH / "push_rewards_sg.py"
 
 

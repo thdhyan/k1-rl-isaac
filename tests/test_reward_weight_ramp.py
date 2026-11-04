@@ -18,7 +18,7 @@ import pathlib
 import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-VEL = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity"
+VEL = _ROOT / "src/k1_velocity/tasks/velocity"
 RAMP = VEL / "reward_weight_ramp.py"
 CFG = VEL / "velocity_env_cfg.py"
 

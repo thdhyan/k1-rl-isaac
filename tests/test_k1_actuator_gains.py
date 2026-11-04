@@ -28,13 +28,13 @@ import pytest
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 BOOSTER = (
     _ROOT
-    / "isaac_tasks/booster_train_ref/source/booster_train/booster_train/assets/robots/booster.py"
+    / "third_party/booster_train/source/booster_train/booster_train/assets/robots/booster.py"
 )
 ACTUATOR = BOOSTER.with_name("actuator.py")
-_SUBMODULE = "isaac_tasks/booster_train_ref"
+_SUBMODULE = "third_party/booster_train"
 CFG = (
     _ROOT
-    / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity/velocity_env_cfg.py"
+    / "src/k1_velocity/tasks/velocity/velocity_env_cfg.py"
 )
 
 
@@ -100,11 +100,17 @@ def test_the_old_override_constants_are_gone():
 
 
 def test_articulation_is_a_plain_deepcopy_of_the_published_cfg():
-    """Nothing may be mutated on the way in."""
+    """Nothing may be mutated on the way in.
+
+    Since booster_ws cc62d12 the cfg comes from ``k1_robot_cfg()``; its
+    ``K1_ASSET=urdf`` branch must hand back an untouched copy of the published cfg.
+    """
     src = CFG.read_text()
-    assert "K1_ARTICULATION_CFG = copy.deepcopy(BOOSTER_K1_CFG)" in src
+    assert "K1_ARTICULATION_CFG = k1_robot_cfg()" in src
+    assets = (_ROOT / "src/k1_velocity/assets_mjlab.py").read_text()
+    assert "return BOOSTER_K1_CFG.copy()" in assets
     # The assignment must be the last thing done to the cfg.
-    tail = src.split("K1_ARTICULATION_CFG = copy.deepcopy(BOOSTER_K1_CFG)", 1)[1]
+    tail = src.split("K1_ARTICULATION_CFG = k1_robot_cfg()", 1)[1]
     assert "K1_ARTICULATION_CFG." not in tail.split("\n\n\n", 1)[0], (
         "the articulation cfg is being mutated immediately after the copy"
     )
@@ -129,7 +135,7 @@ def test_published_gains_are_the_documented_ones():
 def test_the_pinned_submodule_commit_contains_the_fix():
     """The PINNED submodule commit must carry the fix, not just the working tree.
 
-    This is the guard for the actual failure. ``isaac_tasks/booster_train_ref`` is
+    This is the guard for the actual failure. ``third_party/booster_train`` is
     a git submodule, and the armature_ratio fix was originally made only in its
     working tree. Every test in this file passed locally while the training box
     ran ``git reset --hard origin/main``, which restored the submodule to a commit

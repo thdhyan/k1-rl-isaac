@@ -22,11 +22,11 @@ import pathlib
 import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-VEL = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity"
+VEL = _ROOT / "src/k1_velocity/tasks/velocity"
 CFG = VEL / "velocity_env_cfg.py"
 GAIT = VEL / "gait_rewards.py"
 CLOCK = VEL / "gait_clock.py"
-TRAIN = _ROOT / "isaac_tasks/k1_velocity/scripts/train.py"
+TRAIN = _ROOT / "scripts/train.py"
 
 
 def _cls(path: pathlib.Path, name: str) -> ast.ClassDef:

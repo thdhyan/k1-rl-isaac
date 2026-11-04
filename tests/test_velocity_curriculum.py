@@ -19,7 +19,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE_PATH = (
     ROOT
-    / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity/velocity_curriculum.py"
+    / "src/k1_velocity/tasks/velocity/velocity_curriculum.py"
 )
 
 
@@ -454,7 +454,7 @@ def test_default_ceiling_matches_real_robot_evidence():
 
 def test_config_points_at_the_managerterm_adapter():
     """Isaac Lab rejects a bare class here, so the config must use the adapter."""
-    cfg = ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity/velocity_env_cfg.py"
+    cfg = ROOT / "src/k1_velocity/tasks/velocity/velocity_env_cfg.py"
     src = cfg.read_text()
     assert "velocity_curriculum.VelocityRangeCurriculumTerm" in src, (
         "CurrTerm func must be the ManagerTermBase adapter; a bare class raises "
@@ -562,7 +562,7 @@ def _velocity_range_cfg_params():
     The config has two CurrTerms (terrain_levels and velocity_range), so this
     selects the one whose func points at the velocity curriculum.
     """
-    cfg = ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity/velocity_env_cfg.py"
+    cfg = ROOT / "src/k1_velocity/tasks/velocity/velocity_env_cfg.py"
     tree = ast.parse(cfg.read_text())
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -619,7 +619,7 @@ def test_config_opts_into_the_four_ms_stretch_goal():
     goal, so the number, the lateral cap and the caveat are all pinned here.
     """
     params = _velocity_range_cfg_params()
-    src = (ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity/velocity_env_cfg.py").read_text()
+    src = (ROOT / "src/k1_velocity/tasks/velocity/velocity_env_cfg.py").read_text()
     tree = ast.parse(src)
     values = {}
     for node in ast.walk(tree):

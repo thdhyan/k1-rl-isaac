@@ -40,8 +40,8 @@ import types
 import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-SIM_BACKEND = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/sim_backend.py"
-CFG_ROOT = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks"
+SIM_BACKEND = _ROOT / "src/k1_velocity/sim_backend.py"
+CFG_ROOT = _ROOT / "src/k1_velocity/tasks"
 
 #: What the 8192-env K1 actually demanded, verbatim from the PhysX error.
 OBSERVED_DEMAND_8192 = 2_099_817

@@ -22,8 +22,8 @@ import re
 import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-VELOCITY_CFG = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity/velocity_env_cfg.py"
-HEAD_MDP = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/head/head_mdp.py"
+VELOCITY_CFG = _ROOT / "src/k1_velocity/tasks/velocity/velocity_env_cfg.py"
+HEAD_MDP = _ROOT / "src/k1_velocity/tasks/head/head_mdp.py"
 
 
 def _class_body(path: pathlib.Path, name: str) -> ast.ClassDef:

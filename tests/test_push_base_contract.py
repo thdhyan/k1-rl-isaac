@@ -34,9 +34,9 @@ import pathlib
 import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-PUSH = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/push"
+PUSH = _ROOT / "src/k1_velocity/tasks/push"
 PUSH_MDP = PUSH / "push_mdp.py"
-CLOCK = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity/gait_clock.py"
+CLOCK = _ROOT / "src/k1_velocity/tasks/velocity/gait_clock.py"
 
 #: lin 3 + ang 3 + grav 3 + cmd 4 + leg_pos 12 + leg_vel 12 + last 12 + scan 187
 BLOCK_DIMS = {"lin": 3, "ang": 3, "grav": 3, "cmd4": 4,

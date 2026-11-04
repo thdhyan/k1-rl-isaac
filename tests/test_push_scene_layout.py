@@ -27,8 +27,8 @@ import ast
 import pathlib
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-CFG = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/push/push_env_cfg.py"
-MDP = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/push/push_mdp.py"
+CFG = _ROOT / "src/k1_velocity/tasks/push/push_env_cfg.py"
+MDP = _ROOT / "src/k1_velocity/tasks/push/push_mdp.py"
 
 #: reset_box annulus outer radius, and the 1.0 m prototype scaled by 1.5.
 BOX_REACH_M = 1.4

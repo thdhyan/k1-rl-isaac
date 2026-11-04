@@ -18,7 +18,7 @@ import sys
 import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-SCRIPT = _ROOT / "isaac_tasks/k1_velocity/scripts/plateau_stop.py"
+SCRIPT = _ROOT / "scripts/plateau_stop.py"
 
 _spec = importlib.util.spec_from_file_location("plateau_stop", SCRIPT)
 M = importlib.util.module_from_spec(_spec)

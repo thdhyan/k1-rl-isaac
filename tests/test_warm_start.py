@@ -24,8 +24,8 @@ import ast
 import pathlib
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-TRAIN = _ROOT / "isaac_tasks/k1_velocity/scripts/train.py"
-VEL = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity"
+TRAIN = _ROOT / "scripts/train.py"
+VEL = _ROOT / "src/k1_velocity/tasks/velocity"
 GAIT = VEL / "gait_rewards.py"
 CFG = VEL / "velocity_env_cfg.py"
 

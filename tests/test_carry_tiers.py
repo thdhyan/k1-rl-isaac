@@ -13,7 +13,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-CARRY = Path(__file__).resolve().parents[1] / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/carry"
+CARRY = Path(__file__).resolve().parents[1] / "src/k1_velocity/tasks/carry"
 
 
 def _tiers():

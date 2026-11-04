@@ -21,7 +21,7 @@ import re
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-CFG_ROOT = ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks"
+CFG_ROOT = ROOT / "src/k1_velocity/tasks"
 
 # Group classes the managers load from cfg.<attr>.  Nesting depth is used to
 # ignore the inner classes (e.g. ObservationsCfg.PolicyCfg).

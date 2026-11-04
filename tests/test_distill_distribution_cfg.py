@@ -38,7 +38,7 @@ import pathlib
 import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-VEL = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity/agents"
+VEL = _ROOT / "src/k1_velocity/tasks/velocity/agents"
 DISTILL = VEL / "rsl_rl_distill_cfg.py"
 PPO = VEL / "rsl_rl_ppo_cfg.py"
 
@@ -159,7 +159,7 @@ def test_squat_distill_task_is_registered_separately():
     Isaac-Velocity-Distill-K1-v0 raises
         size mismatch for mlp.0.weight: checkpoint [512, 238], model [512, 237]
     """
-    reg = (_ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity/__init__.py").read_text()
+    reg = (_ROOT / "src/k1_velocity/tasks/velocity/__init__.py").read_text()
     assert 'id="Isaac-Velocity-Squat-K1-Distill-v0"' in reg
     block = reg.split('id="Isaac-Velocity-Squat-K1-Distill-v0"', 1)[1].split("gym.register", 1)[0]
     assert "K1VelocitySquatDistillEnvCfg" in block, (
@@ -170,7 +170,7 @@ def test_squat_distill_task_is_registered_separately():
 
 
 def test_squat_distill_env_extends_the_squat_env_not_the_velocity_one():
-    src = (_ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity/"
+    src = (_ROOT / "src/k1_velocity/tasks/velocity/"
            "velocity_env_distill.py").read_text()
     assert "class K1VelocitySquatDistillEnvCfg(K1VelocitySquatEnvCfg)" in src, (
         "the squat distill env must inherit the squat cfg so the student is distilled "

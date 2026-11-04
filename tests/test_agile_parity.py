@@ -27,7 +27,7 @@ import pathlib
 import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-VEL = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity"
+VEL = _ROOT / "src/k1_velocity/tasks/velocity"
 CFG = VEL / "velocity_env_cfg.py"
 AGILE = VEL / "agile_rewards.py"
 
@@ -247,6 +247,7 @@ def _load_agile_module():
     return mod
 
 
+@pytest.mark.isaac
 def test_degenerate_range_is_only_tolerated_when_the_caller_opts_in():
     """A pinned axis must not crash play, but must still crash training.
 

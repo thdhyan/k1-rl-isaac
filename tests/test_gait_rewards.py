@@ -27,10 +27,21 @@ import numpy as np
 import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-VEL = _ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity"
+VEL = _ROOT / "src/k1_velocity/tasks/velocity"
 CFG = VEL / "velocity_env_cfg.py"
 GAIT = VEL / "gait_rewards.py"
-GATE = _ROOT / "isaac_tasks/k1_velocity/scripts/gait_gate.py"
+GATE = _ROOT / "scripts/gait_gate.py"
+# Spark launchers: host side lives in the sibling k1-ops repo, container side in jobs/.
+OPS_SCRIPTS = _ROOT.parent / "k1-ops/scripts"
+JOBS = _ROOT / "jobs"
+
+
+def _ops_launchers(pattern):
+    if not OPS_SCRIPTS.is_dir():
+        pytest.skip("k1-ops is not checked out next to k1-rl-isaac")
+    paths = sorted(OPS_SCRIPTS.glob(pattern))
+    assert paths, f"no {pattern} under {OPS_SCRIPTS}"
+    return paths
 
 
 # --- helpers -----------------------------------------------------------------
@@ -442,13 +453,14 @@ def test_cadence_reads_velocity_not_position():
     """
     src = GAIT.read_text()
     tree = ast.parse(src)
-    fn = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "gait_cadence_penalty"
-    )
-    # Drop the docstring: it names joint_pos when explaining why it is wrong.
+    fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    fn = fns["gait_cadence_penalty"]
+    # The estimator may live in module helpers the penalty calls: read those too.
+    called = [fns[c.func.id] for c in ast.walk(fn)
+              if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id in fns]
+    # Drop the docstrings: they name joint_pos when explaining why it is wrong.
     stmts = [
-        s for s in fn.body
+        s for f in [fn, *called] for s in f.body
         if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)
                 and isinstance(s.value.value, str))
     ]
@@ -516,7 +528,7 @@ def test_probe_treats_new_gait_terms_as_zero_action_inert():
     zero action, so without listing them the probe reports them as dead terms and
     fails the run.
     """
-    probe = _ROOT / "isaac_tasks/k1_velocity/scripts/probe_rewards.py"
+    probe = _ROOT / "scripts/probe_rewards.py"
     src = probe.read_text()
     tree = ast.parse(src)
     inert = None
@@ -545,9 +557,8 @@ def test_no_launcher_deletes_a_cache_it_cannot_delete():
     boot forever: 0% CPU, ~43 MiB, no output, no exception. Each launcher must
     use a fresh per-run cache directory instead of trying to clean the old one.
     """
-    import glob
     bad = []
-    for path in sorted(glob.glob(str(_ROOT / "scripts/spark_*_host.sh"))):
+    for path in _ops_launchers("spark_*_host.sh"):
         src = pathlib.Path(path).read_text()
         if 'rm -rf "$CACHE"' in src:
             bad.append(pathlib.Path(path).name)
@@ -558,8 +569,7 @@ def test_no_launcher_deletes_a_cache_it_cannot_delete():
 
 
 def test_p2_launchers_use_a_unique_cache_dir():
-    import glob
-    for path in sorted(glob.glob(str(_ROOT / "scripts/spark_p2_*_host.sh"))):
+    for path in _ops_launchers("spark_p2_*_host.sh"):
         src = pathlib.Path(path).read_text()
         assert "date +%Y%m%d_%H%M%S" in src, (
             f"{pathlib.Path(path).name} must build a unique cache dir per run"
@@ -575,10 +585,9 @@ def test_campaign_uses_one_kit_launch_per_container():
     difference. The campaign must therefore be split into a preflight container
     and a train container.
     """
-    d = _ROOT / "scripts"
-    pre = (d / "spark_p2_gaitfix_preflight_container.sh")
-    trn = (d / "spark_p2_gaitfix_train_container.sh")
-    host = (d / "spark_p2_gaitfix_host.sh")
+    (host,) = _ops_launchers("spark_p2_gaitfix_host.sh")
+    pre = (JOBS / "spark_p2_gaitfix_preflight_container.sh")
+    trn = (JOBS / "spark_p2_gaitfix_train_container.sh")
     for f in (pre, trn, host):
         assert f.is_file(), f"missing {f.name}"
     # Neither stage container may both preflight and train.

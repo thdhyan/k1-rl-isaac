@@ -29,6 +29,8 @@ import inspect
 import re
 import sys
 
+import pytest
+
 # --- blacklist: known ground-truth observation functions (kick/mdp.py) --------
 GT_FUNC_NAMES = {
     "ball_pos_in_robot_frame",
@@ -137,6 +139,7 @@ def main() -> int:
 
 
 # pytest entry points ----------------------------------------------------------
+@pytest.mark.isaac
 def test_deployability_invariant():
     assert main() == 0
 

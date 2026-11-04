@@ -18,7 +18,7 @@ pytest.importorskip("rsl_rl")
 pytest.importorskip("isaaclab_rl")
 
 ROOT = Path(__file__).resolve().parents[1]
-MOD = ROOT / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/carry/decoupled_policy.py"
+MOD = ROOT / "src/k1_velocity/tasks/carry/decoupled_policy.py"
 
 
 def _load():

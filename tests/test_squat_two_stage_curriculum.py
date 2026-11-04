@@ -13,7 +13,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-VEL = Path(__file__).resolve().parents[1] / "isaac_tasks/k1_velocity/source/k1_velocity/tasks/velocity"
+VEL = Path(__file__).resolve().parents[1] / "src/k1_velocity/tasks/velocity"
 
 
 def _mod():

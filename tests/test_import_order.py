@@ -27,7 +27,7 @@ import pathlib
 
 import pytest
 
-SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "isaac_tasks/k1_velocity/scripts"
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "scripts"
 
 # Modules that must not be imported before the app exists. `isaaclab.app` is the one
 # exception: the launcher itself has to be importable to be constructed.
