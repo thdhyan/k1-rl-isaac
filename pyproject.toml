@@ -29,5 +29,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/compass_k1", "src/k1_kicking", "src/k1_velocity"]
 
+# booster_train: submodule third_party/booster_train (pip install -e third_party/booster_train/source/booster_train).
 # Provided by the environment (ROS 2, Isaac Sim/Lab, mjlab, robot SDK) or not on PyPI under this name:
 # Xlib, booster_assets, booster_train, carb, cli_args, geometry_msgs, imageio_ffmpeg, isaaclab, isaaclab_newton, isaaclab_physx, isaaclab_rl, isaaclab_tasks, isaaclab_visualizers, isaacsim, keyboard_cmd, launch, launch_ros, mobility_es, omni, panel_video, ppo_guard, pxr, rclpy, rsl_rl, sensor_msgs, skrl, tensordict, ultralytics
