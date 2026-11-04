@@ -6,7 +6,7 @@ Part of [k1-rl-isaac](https://github.com/thdhyan/k1-rl-isaac).
 |---|---|
 | `eval_push_check.py` | P6 checkpoint metrics evaluator: run a trained push/reach policy headlessly and report box position error, contact success rate, wrist track |
 | `flatten_k1_usd.py` | Flatten K1 USD hierarchy using Sdf layer manipulation. |
-| `gait_gate.py` | CLI for `k1_utils.gait_gate`: gait quality gate (cadence, stride, jerk, foot swing) over a play trace. |
+| `gait_gate.py` | Gait quality gate CLI. Implementation: k1_utils.gait_gate. Usage: gait_gate.py <trace.npz> [--strict] |
 | `keyboard_cmd.py` | Keyboard velocity commands for the interactive play scripts. |
 | `make_zero_actor.py` | Save an UNTRAINED actor for the push task, so the environment can be run and rendered now. |
 | `panel_video.py` | Small tiled debug-video helper for K1 play/eval runs. |
