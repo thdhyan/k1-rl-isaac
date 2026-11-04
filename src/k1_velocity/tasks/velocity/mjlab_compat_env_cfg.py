@@ -22,7 +22,7 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils.configclass import configclass
 
 from k1_velocity.assets_mjlab import K1_MJLAB_ACTION_SCALE, K1_MJLAB_CFG, LEG_JOINTS, UPPER_REGEX
-from k1_velocity.sim_backend import apply_physics_backend
+from k1_velocity.sim_backend import apply_physics_backend, ensure_physx_gpu_capacity
 
 from .velocity_env_cfg import mdp
 
@@ -117,6 +117,7 @@ class K1MjlabFlatEnvCfg(ManagerBasedRLEnvCfg):
     super().__post_init__()
     self.sim.use_newton_actuators = False
     apply_physics_backend(self)
+    ensure_physx_gpu_capacity(self)
     self.sim.dt = 0.005
     self.decimation = 4
     self.sim.render_interval = self.decimation
