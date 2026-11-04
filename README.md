@@ -39,7 +39,7 @@ uv sync
 
 ## Usage
 
-Isaac Lab tasks. Needs Isaac Sim and Isaac Lab, so run it on a GPU host (lambda, dl, zz-bw, sparks).
+Isaac Lab tasks. Needs Isaac Sim and Isaac Lab, so run it on a GPU host.
 
 ```bash
 python scripts/train.py --task Isaac-Velocity-Flat-K1-Mjlab-v0 --num_envs 4096 --headless
