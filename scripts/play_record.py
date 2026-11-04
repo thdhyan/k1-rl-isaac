@@ -1,0 +1,757 @@
+"""Play + RECORD a trained K1 policy headlessly: mp4 with a live HUD + .npz trace.
+
+The HUD shows the policy's *inputs and outputs* on every frame:
+  * velocity commands (or "stand" for the command-less P1 task),
+  * all observation groups as value bars (policy / teacher, dim-labelled),
+  * the action vector as signed bars,
+  * per-step reward + episode reward,
+  * task id, checkpoint name, step count / sim time.
+
+A full-fidelity sidecar trace (obs groups, actions, rewards, dones per step,
+all envs) is saved as ``*_trace.npz`` for offline analysis, and the policy can
+be exported to TorchScript (``--export``) — mirrors ``play.py`` / ``play_student.py`
+` loading (PPO vs distillation auto-detected from the agent cfg).
+
+Usage (from booster_ws root, inside the isaac-lab container):
+  python isaac_tasks/k1_velocity/scripts/play_record.py \
+      --task Isaac-Basic-Teacher-K1-v0 \
+      --checkpoint logs/rsl_rl/p1_basic_teacher/<run>/model_6498.pt \
+      --num_envs 4 --steps 750 --headless \
+      --video_out isaac_tasks/k1_velocity/videos/p1_teacher.mp4 \
+      --trace_out isaac_tasks/k1_velocity/videos/p1_teacher_trace.npz \
+      --export models/p1_basic_teacher.pt \
+      --label "P1 teacher" --eye 3.0,-3.0,1.7 --lookat 0,0,0.55 \
+      [--cmd 0.6 0.0 0.5]
+"""
+import argparse
+import os
+import sys
+
+
+from isaaclab.app import AppLauncher
+
+parser = argparse.ArgumentParser(description="Play + record a K1 policy with HUD overlay.")
+parser.add_argument("--task", required=True, help="registered gym task id")
+parser.add_argument("--checkpoint", required=True, help="rsl_rl model_*.pt path")
+parser.add_argument("--mappo", action="store_true",
+                    help="multi-robot task: --checkpoint is a skrl MAPPO agent_*.pt (train_mappo.py), "
+                         "one separate policy per robot")
+parser.add_argument("--num_envs", type=int, default=4)
+parser.add_argument("--steps", type=int, default=750, help="control steps (~50 Hz -> 15 s @ 750)")
+parser.add_argument("--video_out", default="", help="output mp4 path")
+parser.add_argument("--trace_out", default="", help="output .npz trace path")
+parser.add_argument("--export", default="", help="export TorchScript .pt path")
+parser.add_argument("--export_onnx", default="", help="export ONNX path")
+parser.add_argument("--label", default="", help="HUD title label")
+parser.add_argument("--cmd", type=float, nargs=3, default=None,
+                    metavar=("VX", "VY", "WZ"),
+                    help="pin the velocity command (vx vy wz); also disables heading mode")
+parser.add_argument("--eye", default="", help="camera eye 'x,y,z'")
+parser.add_argument("--lookat", default="", help="camera lookat 'x,y,z'")
+parser.add_argument("--focal", type=float, default=17.0, help="camera focal length (mm)")
+parser.add_argument("--width", type=int, default=1024, help="video width px")
+parser.add_argument("--height", type=int, default=576, help="video height px")
+parser.add_argument("--disable_jit", action="store_true")
+parser.add_argument("--panel_video", action="store_true",
+                    help="write a labelled overview/top-down/follow/side debug panel instead of the HUD clip")
+parser.add_argument("--panel_fps", type=int, default=25)
+parser.add_argument("--no_head_cam", action="store_true",
+                    help="panel video: skip the robot-eye RGB + depth panels (on by default)")
+parser.add_argument("--panel_size", type=int, nargs=2, default=(1920, 1080), metavar=("W", "H"),
+                    help="size of EACH debug panel (default 1080p; the 2x2 tile is twice that)")
+parser.add_argument("--panel_spp", type=int, default=8,
+                    help="RTX real-time path tracer samples per pixel for the panels")
+parser.add_argument("--panel_subframes", type=int, default=4,
+                    help="Kit updates per captured frame so the denoiser converges (less grain)")
+parser.add_argument("--keyboard", action="store_true",
+                    help="drive the command from the keyboard (W/S/A/D/Q/E, Space stop, "
+                         "Esc quit) while recording video + trace")
+parser.add_argument("--max_lin", type=float, default=1.5,
+                    help="keyboard cap on commanded |vx|,|vy| (m/s)")
+parser.add_argument("--max_ang", type=float, default=2.0,
+                    help="keyboard cap on commanded |wz| (rad/s)")
+AppLauncher.add_app_launcher_args(parser)
+args_cli, hydra_args = parser.parse_known_args()
+sys.argv = [sys.argv[0]] + hydra_args
+
+# RGB frames need the renderer active (mirrors train.py --video wiring).
+args_cli.enable_cameras = True
+
+app_launcher = AppLauncher(args_cli)
+simulation_app = app_launcher.app
+
+# ---- post-app imports ----
+import gymnasium as gym  # noqa: E402
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+
+from PIL import Image, ImageDraw, ImageFont  # noqa: E402
+import imageio.v2 as imageio  # noqa: E402
+
+from panel_video import K1DebugMarkers, marker_kind, PanelCameras, TiledPanelRecorder, pump_app, set_clean_render  # noqa: E402
+
+from rsl_rl.runners import DistillationRunner, OnPolicyRunner  # noqa: E402
+
+from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnvCfg  # noqa: E402
+from isaaclab_tasks.utils.hydra import hydra_task_config  # noqa: E402
+from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
+
+import isaaclab_tasks  # noqa: F401,E402
+import booster_train.tasks  # noqa: F401,E402
+import k1_velocity.tasks.velocity  # noqa: F401,E402
+import k1_velocity.tasks.basic  # noqa: F401,E402 — P1 BASIC (+P1f) family
+import k1_velocity.tasks.partial  # noqa: F401,E402 — partial-control (legs+head) family
+import k1_velocity.tasks.kick  # noqa: F401,E402 — kick family (harmless if unused)
+import k1_velocity.tasks.head  # noqa: F401,E402 — P3 head-tracking family (harmless if unused)
+import k1_velocity.tasks.push  # noqa: F401,E402 — P6 box-push family (harmless if unused)
+import k1_velocity.tasks.carry  # noqa: F401 — P7 box-carry family
+import k1_velocity.tasks.skills  # noqa: F401 — P8/P9 residual skills (ball track, kick)
+
+
+def _parse_vec3(text: str) -> tuple[float, float, float] | None:
+    if not text:
+        return None
+    x, y, z = (float(v) for v in text.split(","))
+    return (x, y, z)
+
+
+def _load_fonts():
+    try:  # Pillow >= 10 accepts a pixel size
+        return ImageFont.load_default(size=15), ImageFont.load_default(size=12)
+    except TypeError:
+        f = ImageFont.load_default()
+        return f, f
+
+
+def _set_recording_camera(base_env, robot, eye_offset, lookat_offset) -> None:
+    """Aim the RGB recorder at env 0, including while the robot moves.
+
+    ``ManagerBasedRLEnv`` creates the RGB recorder before the first reset.  Its
+    camera is initialized from absolute coordinates, so an env-relative viewer
+    setting alone is not enough for terrain envs whose origin is far from zero.
+    Update both the capture config (first frame) and the Kit viewport (later
+    frames); this keeps the P1 stand clips and P2 walking clips centered.
+    """
+    try:
+        from isaacsim.core.rendering_manager import ViewportManager
+    except (ImportError, ModuleNotFoundError):
+        return
+    if eye_offset is None or lookat_offset is None:
+        return
+    root = robot.data.root_pos_w.torch[0].detach().cpu().numpy()
+    eye = tuple(float(v) for v in (root + np.asarray(eye_offset, dtype=np.float64)))
+    target = tuple(float(v) for v in (root + np.asarray(lookat_offset, dtype=np.float64)))
+    recorder = getattr(base_env, "video_recorder", None)
+    capture = getattr(recorder, "_capture", None)
+    if capture is not None and getattr(capture, "cfg", None) is not None:
+        capture.cfg.eye = eye
+        capture.cfg.lookat = target
+    try:
+        camera_path = "/OmniverseKit_Persp"
+        if capture is not None and getattr(capture, "cfg", None) is not None:
+            camera_path = capture.cfg.camera_prim_path
+        ViewportManager.set_camera_view(camera_path, eye=list(eye), target=list(target))
+    except (AttributeError, RuntimeError, TypeError):
+        # The recorder will report a hard failure itself if no camera exists.
+        pass
+
+
+class Hud:
+    """Draws commands / obs / actions / reward over a rendered frame."""
+
+    def __init__(self, label: str, task: str, ckpt: str, num_envs: int,
+                 cmd_text: str, dt: float, width: int, height: int):
+        self.label = label or task
+        self.task = task
+        self.ckpt = os.path.basename(ckpt)
+        self.num_envs = num_envs
+        self.cmd_text = cmd_text
+        self.dt = dt
+        self.width, self.height = width, height
+        self.big, self.small = _load_fonts()
+
+    @staticmethod
+    def _bar_row(draw, x0, x1, y0, y1, values, clip=5.0, label=None,
+                 font=None, label_w=0):
+        """One horizontal row of per-dim signed bars (values clipped to ±clip)."""
+        mid = (y0 + y1) // 2
+        half = max((y1 - y0) // 2 - 1, 2)
+        if label is not None:
+            draw.text((x0, y0 - 1), label, fill=(230, 230, 230), font=font)
+            x0 += label_w
+        vals = np.clip(np.asarray(values, dtype=np.float64), -clip, clip) / clip
+        n = len(vals)
+        area = max(x1 - x0, 8)
+        # center line
+        draw.line((x0, mid, x1, mid), fill=(70, 70, 70), width=1)
+        for i, v in enumerate(vals):
+            bx0 = x0 + int(i * area / n)
+            bx1 = max(x0 + int((i + 1) * area / n), bx0 + 1)
+            bh = int(abs(v) * half)
+            if bh < 1:
+                bh = 1
+            color = (90, 200, 255) if v >= 0 else (255, 160, 60)
+            if v >= 0:
+                draw.rectangle((bx0, mid - bh, bx1 - 1, mid), fill=color)
+            else:
+                draw.rectangle((bx0, mid, bx1 - 1, mid + bh), fill=color)
+
+    def draw(self, frame: np.ndarray, step: int, actions, obs: dict,
+             step_reward: float, ep_reward: float) -> np.ndarray:
+        img = Image.fromarray(frame)
+        draw = ImageDraw.Draw(img, "RGBA")
+        W, H = img.size
+        y0 = int(H * 0.60)
+        draw.rectangle((0, y0, W, H), fill=(0, 0, 0, 175))
+        # badge (top-left)
+        badge = f"{self.ckpt}  |  {self.task}"
+        tw = draw.textlength(badge, font=self.small)
+        draw.rectangle((4, 4, 8 + tw, 22), fill=(0, 0, 0, 170))
+        draw.text((6, 6), badge, fill=(255, 255, 120), font=self.small)
+
+        t = step * self.dt
+        draw.text((8, y0 + 4),
+                  f"{self.label}   step {step}   t={t:.1f}s   envs={self.num_envs}",
+                  fill=(255, 255, 255), font=self.big)
+        draw.text((8, y0 + 24),
+                  f"cmd: {self.cmd_text}   step reward: {step_reward:+.4f}   "
+                  f"episode reward: {ep_reward:+.2f}",
+                  fill=(200, 255, 200), font=self.small)
+
+        # actions row (policy outputs, env 0)
+        a = np.asarray(actions, dtype=np.float64).ravel()
+        avals = " ".join(f"{v:+.2f}" for v in a[:16])
+        draw.text((8, y0 + 42),
+                  f"actions (env0, {len(a)}-dim): {avals}", fill=(180, 255, 180),
+                  font=self.small)
+        self._bar_row(draw, 8, W - 8, y0 + 58, y0 + 96, a, clip=1.0,
+                      font=self.small)
+
+        # observation rows (one per group, env 0)
+        yy = y0 + 104
+        for name, vals in obs.items():
+            vals = np.asarray(vals, dtype=np.float64).ravel()
+            self._bar_row(draw, 8, W - 8, yy, yy + 24, vals, clip=5.0,
+                          label=f"obs['{name}'] ({len(vals)}):",
+                          font=self.small, label_w=140)
+            yy += 30
+        return np.asarray(img)
+
+
+def _load_mappo_actors(path, robot_names, device):
+    """skrl MAPPO checkpoint -> one deterministic actor per robot (mean action).
+
+    Mirrors train_mappo.py: obs scaler (running_mean/variance, clip MAPPO_OBS_CLIP) then
+    Linear-ELU MLP ``net``. Plain torch, so play_record does not need skrl.
+    """
+    # train_mappo.py's observation_preprocessor clip_threshold; runs started before that
+    # setting existed (2026-10-10_20-39-31) used skrl's default 5
+    MAPPO_OBS_CLIP = float(os.environ.get("K1_MAPPO_OBS_CLIP", 1.0e3))
+    ck = torch.load(os.path.abspath(path), map_location=device, weights_only=False)
+    actors = []
+    for uid in robot_names:
+        sd, sc = ck[uid]["policy"], ck[uid]["observation_preprocessor"]
+        idx = sorted({int(k.split(".")[1]) for k in sd if k.startswith("net.")})
+        layers = []
+        for j, i in enumerate(idx):
+            w = sd[f"net.{i}.weight"]
+            lin = torch.nn.Linear(w.shape[1], w.shape[0]).to(device)
+            lin.weight.data.copy_(w)
+            lin.bias.data.copy_(sd[f"net.{i}.bias"])
+            layers += [lin] + ([torch.nn.ELU()] if j < len(idx) - 1 else [])
+        net = torch.nn.Sequential(*layers).eval()
+        mean, std = sc["running_mean"].float(), sc["running_variance"].float().sqrt() + 1e-8
+
+        def act(x, net=net, mean=mean, std=std):
+            with torch.inference_mode():
+                return net(((x - mean) / std).clamp(-MAPPO_OBS_CLIP, MAPPO_OBS_CLIP))
+        actors.append(act)
+    print(f"[INFO] MAPPO: {len(actors)} separate policies from {path}")
+    return actors
+
+
+class _OneRobotView:
+    """What OnPolicyRunner reads at construction, shaped like ONE robot of a multi-robot env.
+
+    Multi-robot push names its obs groups ``teacher_0, teacher_1, ...`` while the
+    trained single-robot policy expects ``teacher``; the runner only needs this view
+    to build the actor (obs shapes, action count), inference stacks every robot.
+    """
+
+    def __init__(self, env, groups, num_actions):
+        from tensordict import TensorDict
+
+        self._td = TensorDict
+        self._env = env
+        self._groups = groups
+        self.num_actions = num_actions
+        self.num_envs = env.num_envs
+        self.cfg = env.cfg
+        self.device = env.device
+
+    def get_observations(self):
+        obs = self._env.get_observations()
+        return self._td({g: obs[f"{g}_0"] for g in self._groups}, batch_size=[self.num_envs])
+
+
+@hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
+def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg):
+    import inspect
+
+    from isaaclab_visualizers.kit import KitVisualizerCfg
+
+    # -- env sizing --------------------------------------------------------
+    env_cfg.scene.num_envs = args_cli.num_envs
+    env_cfg.sim.device = args_cli.device if args_cli.device else env_cfg.sim.device
+
+    # -- camera: explicit viewer + Kit visualizer pose ----------------------
+    # The image build's viewer controller can follow an asset root.  This is
+    # required for rough-terrain recordings: env 0 is often at (5, -55, ...),
+    # not the world origin, so a world-framed camera otherwise records empty
+    # terrain.  Keep the fallback for older viewer configs.
+    eye = _parse_vec3(args_cli.eye)
+    lookat = _parse_vec3(args_cli.lookat)
+    viewer = getattr(env_cfg, "viewer", None)
+    if viewer is not None:
+        if eye is not None:
+            viewer.eye = eye
+        if lookat is not None:
+            viewer.lookat = lookat
+        if hasattr(viewer, "origin_type"):
+            if hasattr(viewer, "asset_name"):
+                viewer.origin_type = "asset_root"
+                # multi-robot push has robot_0, robot_1, ... and no "robot"
+                viewer.asset_name = "robot" if getattr(env_cfg.scene, "robot", None) is not None else "robot_0"
+            else:
+                viewer.origin_type = "env"
+        if hasattr(viewer, "env_index"):
+            viewer.env_index = 0
+    vkw = dict(headless=True, focal_length=args_cli.focal,
+               window_width=args_cli.width, window_height=args_cli.height)
+    if eye is not None:
+        vkw["eye"] = eye
+    if lookat is not None:
+        vkw["lookat"] = lookat
+    params = inspect.signature(KitVisualizerCfg).parameters
+    vkw = {k: v for k, v in vkw.items() if k in params}
+    env_cfg.sim.visualizer_cfgs = [KitVisualizerCfg(**vkw)]
+
+    # -- optional command pin (circle path keeps the robot in frame) -------
+    cmd_text = "none (stand task)"
+    if args_cli.cmd is not None and hasattr(env_cfg, "commands") and \
+            hasattr(env_cfg.commands, "base_velocity"):
+        vx, vy, wz = args_cli.cmd
+        env_cfg.commands.base_velocity.ranges.lin_vel_x = (vx, vx)
+        env_cfg.commands.base_velocity.ranges.lin_vel_y = (vy, vy)
+        env_cfg.commands.base_velocity.ranges.ang_vel_z = (wz, wz)
+        env_cfg.commands.base_velocity.heading_command = False
+        cmd_text = f"vx={vx:+.2f}  vy={vy:+.2f}  wz={wz:+.2f}"
+
+    # -- keyboard drive -----------------------------------------------------
+    # Same three things play.py established, in the same order:
+    #   * the X11 backend from keyboard_cmd, because carb.input is absent in
+    #     Isaac Sim 6;
+    #   * write into the tensor `get_command` returns rather than calling
+    #     CommandManager.set_command, which no longer exists;
+    #   * zero it first, so the session starts still instead of at whatever the
+    #     config's command term sampled.
+    # Writing in place also beats set_command against the 8-12 s resample timer,
+    # which would otherwise overwrite the key command between frames.
+    # env.decimation is not the timestep either: it is env.step_dt.
+    kb = None
+    cmd_buf = None
+    if args_cli.keyboard:
+        if args_cli.cmd is not None:
+            print("[WARN] --keyboard given with --cmd; the keyboard wins and the "
+                  "pinned range is ignored")
+        import keyboard_cmd
+
+        kb = keyboard_cmd.VelocityKeyboard(
+            max_lin=args_cli.max_lin,
+            max_ang=args_cli.max_ang,
+            on_quit=simulation_app.close,
+        )
+        print(f"[INFO] keyboard backend: {kb.state.backend} "
+              f"(W/S fwd-back, A/D strafe, Q/E turn, Space stop, Esc quit)")
+
+    # -- env + rgb render --------------------------------------------------
+    gym_env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
+    base_env = gym_env.unwrapped
+    arts = base_env.scene.articulations
+    robot_names = ["robot"] if "robot" in arts else sorted(n for n in arts if n.startswith("robot_"))
+    robot = arts[robot_names[0]]
+    multi = len(robot_names) > 1
+    panel_cams = panel_recorder = markers = None
+    if args_cli.panel_video:
+        if not args_cli.video_out:
+            raise ValueError("--panel_video requires --video_out")
+        set_clean_render(args_cli.panel_spp)
+        panel_names = (("overview", "top_down") + tuple(f"follow_{n}" for n in robot_names)
+                       if multi else ("overview", "top_down", "follow", "side"))
+        # robot-eye RGB + depth per robot ("" for the single-robot env)
+        head_keys = () if args_cli.no_head_cam else (
+            tuple(f"_{n}" for n in robot_names) if multi else ("",))
+        panel_cams = PanelCameras(names=panel_names, size=tuple(args_cli.panel_size), heads=head_keys)
+        head_body = {n: arts[n].find_bodies("Head_2")[0][0] for n in robot_names}
+        markers = K1DebugMarkers(marker_kind(args_cli.task))
+        panel_recorder = TiledPanelRecorder(
+            args_cli.video_out, panel_cams.names, size=tuple(args_cli.panel_size), fps=args_cli.panel_fps
+        )
+        print(f"[INFO] panel recording -> {args_cli.video_out}")
+    env = RslRlVecEnvWrapper(gym_env)
+
+    # -- runner: PPO vs distillation (mirrors play.py / play_student.py) ---
+    is_distill = getattr(agent_cfg.algorithm, "class_name", "PPO") == "Distillation"
+    agent_cfg.max_iterations = 1
+    agent_cfg_dict = agent_cfg.to_dict()
+    if args_cli.mappo:
+        assert multi, "--mappo needs a multi-robot task"
+        policy, export_groups = None, []
+        mappo_actors = _load_mappo_actors(args_cli.checkpoint, robot_names, env.device)
+    elif is_distill:
+        for key in ("stochastic", "init_noise_std", "noise_std_type",
+                    "state_dependent_std"):
+            for mk in ("student", "teacher"):
+                agent_cfg_dict[mk].pop(key, None)
+        runner = DistillationRunner(env, agent_cfg_dict,
+                                    log_dir="/tmp/k1_record_student",
+                                    device=agent_cfg.device)
+        print(f"[INFO] loading student checkpoint: {args_cli.checkpoint}")
+        runner.load(os.path.abspath(args_cli.checkpoint),
+                    load_cfg={"student": True, "optimizer": True,
+                              "iteration": True})
+        # the deployable student consumes only the blind "policy" group
+        export_groups = list(agent_cfg.obs_groups.get("student", ["policy"]))
+    else:
+        for key in ("stochastic", "init_noise_std", "noise_std_type",
+                    "state_dependent_std"):
+            for mk in ("actor", "critic"):
+                agent_cfg_dict[mk].pop(key, None)
+        policy_groups = sorted({g for gs in agent_cfg.obs_groups.values() for g in gs})
+        runner_env = env
+        if multi:
+            runner_env = _OneRobotView(env, policy_groups, env.num_actions // len(robot_names))
+            print(f"[INFO] multi-robot: {robot_names} share one policy "
+                  f"({policy_groups} <- {[g + '_k' for g in policy_groups]})")
+        runner = OnPolicyRunner(runner_env, agent_cfg_dict,
+                                log_dir="/tmp/k1_record",
+                                device=agent_cfg.device)
+        print(f"[INFO] loading checkpoint: {args_cli.checkpoint}")
+        runner.load(os.path.abspath(args_cli.checkpoint))
+        export_groups = list(agent_cfg.obs_groups.get("actor", ["policy"]))
+    if not args_cli.mappo:
+        policy = runner.alg.get_policy()
+        policy.eval()
+
+    def infer(obs):
+        if args_cli.mappo:
+            # separate per-robot policies, each on its own teacher_k; robot-major concat
+            return torch.cat([act(obs[f"teacher_{k}"]) for k, act in enumerate(mappo_actors)], dim=1)
+        if is_distill:
+            return policy({"policy": obs["policy"]})
+        if multi:
+            # one batched actor call over every robot: (R*N, d) -> (R*N, a) -> (N, R*a),
+            # robot-major to match the action term order base_k | wrist_left_k | wrist_right_k
+            from tensordict import TensorDict
+
+            R, N = len(robot_names), env.num_envs
+            stacked = TensorDict(
+                {g: torch.cat([obs[f"{g}_{k}"] for k in range(R)], dim=0) for g in policy_groups},
+                batch_size=[R * N])
+            a = policy(stacked)
+            return a.view(R, N, -1).permute(1, 0, 2).reshape(N, -1)
+        return policy(obs)
+
+    # -- HUD + writers -----------------------------------------------------
+    hud = Hud(label=args_cli.label, task=args_cli.task, ckpt=args_cli.checkpoint,
+              num_envs=args_cli.num_envs, cmd_text=cmd_text,
+              dt=float(getattr(env, "step_dt", 0.02)),
+              width=args_cli.width, height=args_cli.height)
+    writer = None
+    if args_cli.video_out and not args_cli.panel_video:
+        os.makedirs(os.path.dirname(os.path.abspath(args_cli.video_out)),
+                    exist_ok=True)
+        fps = int(getattr(env, "metadata", {}).get("render_fps", 50)) or 50
+        writer = imageio.get_writer(args_cli.video_out, fps=fps)
+        print(f"[INFO] recording -> {args_cli.video_out} ({fps} fps)")
+
+    trace = {k: [] for k in ("actions", "rewards", "dones", "root_pos", "root_lin_vel")}
+    # ---- foot kinematics + contact, so swing can be MEASURED ------------
+    # WHY: `feet_clearance` reads -0.0000 in the 512-env runs and -0.019 in the
+    # 8192-env 70k run, and that number cannot be interpreted from the trace
+    # alone. The term is gated on `active` = "this env has at least one swinging
+    # foot", so an exact zero has two opposite causes -- no foot ever leaves the
+    # floor (the shuffle), or the swinging feet are already above the 6 cm target
+    # (fine). And `gait_gate.py` cannot break the tie either: its `stride` is
+    # computed as speed / cadence, so it is a restatement of the other two columns
+    # rather than independent evidence of step length, and its `cadence` is the
+    # FFT peak of the knee ACTION. Neither one looks at where the feet are.
+    #
+    # So record the foot state directly. foot_z is world-frame height (the term
+    # reads body_pos_w[..., 2]); foot_contact_n is the contact-sensor force norm
+    # per foot, which is what decides `swing` (force <= FOOT_CONTACT_MAX_N).
+    # resolve_order=True pins [left, right] the same way the reward terms do --
+    # it defaults to False, which follows the sensor's body order instead.
+    FOOT_BODIES = ["left_foot_link", "right_foot_link"]
+    FOOT_CONTACT_MAX_N = 1.0        # must match feet_clearance's foot_height_threshold
+    try:
+        _foot_ids, _ = robot.find_bodies(FOOT_BODIES, preserve_order=True)
+        _sensor = base_env.scene.sensors.get("contact_forces")
+        _sensor_ids, _ = _sensor.find_bodies(FOOT_BODIES, preserve_order=True)
+        _has_feet = True
+    except Exception as exc:  # noqa: BLE001 - contact sensor is optional in play cfgs
+        _foot_ids = _sensor_ids = None
+        _has_feet = False
+        print(f"[WARN] foot trace unavailable ({type(exc).__name__}: {exc}); "
+              "swing/clearance cannot be measured from this trace")
+    if _has_feet:
+        # Declare them here, not at the dict literal above: appending to a key
+        # that was never created raises KeyError on the first step.
+        trace.setdefault("foot_pos", [])
+        trace.setdefault("foot_contact_n", [])
+    obs, _extras = env.reset()
+    if kb is not None:
+        cmd_buf = base_env.command_manager.get_command("base_velocity")
+        cmd_buf.zero_()  # start still, not at the config's sampled command
+        cmd_text = "keyboard (Space=stop)"
+    eye_offset = eye if eye is not None else tuple(env_cfg.viewer.eye)
+    lookat_offset = lookat if lookat is not None else tuple(env_cfg.viewer.lookat)
+    _set_recording_camera(base_env, robot, eye_offset, lookat_offset)
+    # obs is a TensorDict (RslRlVecEnvWrapper.reset/step): plain `for k in obs`
+    # falls back to the SEQUENCE protocol (obs[0], obs[1]... = batch slices) and
+    # never yields the group keys — iterate .keys() explicitly (plain dicts
+    # support it too).
+    for k in list(obs.keys()):
+        trace[f"obs_{k}"] = []
+    torch.backends.cuda.matmul.allow_tf32 = True
+
+    ep_reward = torch.zeros(args_cli.num_envs, device=env.device)
+    frames_written = 0
+
+    def _head_views():
+        """Robot-eye cameras: 10 cm ahead of / 8 cm above the Head_2 frame, looking along its +x."""
+        from isaaclab.utils.math import quat_apply
+
+        views = []
+        if args_cli.no_head_cam:
+            return views
+        for n in robot_names:
+            data = arts[n].data
+            pos = data.body_pos_w.torch[0, head_body[n]]
+            q = data.body_quat_w.torch[0, head_body[n]]
+            off = torch.tensor([[0.10, 0.0, 0.08], [1.10, 0.0, 0.08]], device=pos.device)
+            eye, tgt = (quat_apply(q.expand(2, 4), off) + pos).cpu().numpy()
+            views.append((f"head_{n}" if multi else "head", eye, tgt))
+        return views
+
+    def _panel_views():
+        return _panel_views_world() + _head_views()
+
+    def _panel_views_world():
+        root = robot.data.root_pos_w[0].detach().cpu().numpy()
+        if multi:
+            # overview/top-down centred on the team; one follow cam behind each robot
+            roots = [arts[n].data.root_pos_w[0].detach().cpu().numpy() for n in robot_names]
+            mid = np.mean(roots, axis=0) + np.array([0.6, 0.0, 0.0])
+            views = [
+                ("overview", mid + np.array([2.6, -4.6, 3.0]), mid + np.array([0.0, 0.0, 0.35])),
+                ("top_down", mid + np.array([0.001, -0.001, 7.0]), mid),
+            ]
+            for n, r in zip(robot_names, roots):
+                views.append((f"follow_{n}", r + np.array([-1.6, 0.0, 1.3]), r + np.array([1.2, 0.0, 0.4])))
+            return views
+        return [
+            ("overview", root + np.array([3.2, -4.2, 2.6]), root + np.array([0.0, 0.0, 0.35])),
+            ("top_down", root + np.array([0.001, -0.001, 6.0]), root),
+            ("follow", root + np.array([1.9, -1.9, 1.15]), root + np.array([0.0, 0.0, 0.45])),
+            ("side", root + np.array([-2.6, 0.0, 1.4]), root + np.array([0.0, 0.0, 0.45])),
+        ]
+
+    def _robot_status():
+        """Per robot: frozen-base command (vx, vy, wz, H*), trunk height, wrist-box gap."""
+        from k1_velocity.tasks.push import push_mdp
+
+        parts = []
+        for k, n in enumerate(robot_names):
+            try:
+                term = base_env.action_manager.get_term(f"base_velocity_{k}")
+                c = term.processed_actions[0].tolist()
+                z = float(arts[n].data.root_pos_w[0, 2])
+                gap = push_mdp.wrist_box_gap(base_env, n)[0].max().item()
+                parts.append(f"{n}: cmd=({c[0]:+.2f},{c[1]:+.2f},{c[2]:+.2f}) H*={c[3]:.2f} "
+                             f"z={z:.2f} wrist-box gap={gap:.2f}m")
+            except Exception as exc:  # noqa: BLE001 - status only
+                parts.append(f"{n}: n/a ({type(exc).__name__})")
+        return " | ".join(parts)
+
+    def _mark_wrist_targets():
+        """World-frame wrist targets of every robot (orange) for the push panels."""
+        from isaaclab.utils.math import quat_apply
+
+        if "arm_left" in base_env.action_manager.active_terms:
+            # push v4: the IK targets (cyan) and stub tips (magenta); wrist_target is unused there
+            from k1_velocity.tasks.push import push_arms_mdp
+
+            r = arts[robot_names[0]]
+            q = r.data.root_quat_w.torch[0:1]
+            for j, side in enumerate(("arm_left", "arm_right")):
+                tgt = base_env.action_manager.get_term(side).target_b[0:1]
+                p = (quat_apply(q, tgt) + r.data.root_pos_w.torch[0])[0]
+                markers.mark(f"ik_tgt_{j}", p.detach().cpu().numpy(), color=(0.1, 0.9, 1.0), radius=0.035)
+            for j, p in enumerate(push_arms_mdp.stub_tips_w(base_env)[0].detach().cpu().numpy()):
+                markers.mark(f"stub_tip_{j}", p, color=(1.0, 0.1, 0.9), radius=0.025)
+            return
+        for k, n in enumerate(robot_names):
+            r = arts[n]
+            term = f"wrist_target_{k}" if multi else "wrist_target"
+            tgt = base_env.command_manager.get_term(term).command[0].view(2, 3)
+            q = r.data.root_quat_w.torch[0:1].repeat(2, 1)
+            w = quat_apply(q, tgt) + r.data.root_pos_w.torch[0]
+            for j, p in enumerate(w.detach().cpu().numpy()):
+                markers.mark(f"wrist_tgt_{k}_{j}", p, color=(1.0, 0.5, 0.05), radius=0.05)
+
+    def _panel_status(step, step_reward, episode_reward):
+        info = markers.update(base_env, robot, args_cli.task) if markers else {"knowledge": "n/a"}
+        if markers and markers.kind == "push":
+            try:
+                _mark_wrist_targets()
+            except Exception as exc:  # noqa: BLE001 - debug markers only
+                print(f"[markers] wrist targets skipped: {type(exc).__name__}: {exc}")
+        if multi and markers:
+            info["knowledge"] = f"{info['knowledge']} | {_robot_status()}"
+        visible = ""
+        state = getattr(base_env, "head_track", None)
+        if state is not None and getattr(state, "yolo", None) is not None:
+            visible = f" detector_visible={float(state.yolo[0, 0]):.0f}"
+        return (f"{args_cli.label or args_cli.task} | step {step}/{args_cli.steps} | "
+                f"t={step * float(getattr(env, 'step_dt', 0.02)):.1f}s | "
+                f"cmd={cmd_text} | reward={step_reward:+.3f} | episode={episode_reward:+.2f} | "
+                f"{info['knowledge']}{visible}")
+
+    with torch.inference_mode():
+        for n in range(args_cli.steps):
+            if not simulation_app.is_running():
+                break
+            actions = infer(obs)
+            if kb is not None:
+                # kb.update returns a 3-vector (vx, vy, wz) already ramped and
+                # clamped by --max_lin/--max_ang. step_dt is the control period;
+                # env.decimation is not it.
+                _cmd = kb.update(base_env.step_dt)
+                cmd_buf[:] = torch.tensor(_cmd, dtype=cmd_buf.dtype, device=cmd_buf.device)
+                cmd_text = (f"KEY vx={_cmd[0]:+.2f} vy={_cmd[1]:+.2f} wz={_cmd[2]:+.2f}")
+            obs, rew, dones, _ = env.step(actions)
+            ep_reward += rew
+            ep_reward[dones.bool()] = 0.0
+
+            # ---- capture + overlay ------------------------------------
+            _set_recording_camera(base_env, robot, eye_offset, lookat_offset)
+            if panel_recorder is not None:
+                markers.update(base_env, robot, args_cli.task)
+                panel_cams.set_views(_panel_views())
+                pump_app(args_cli.panel_subframes)
+                images = {name: panel_cams.read(name) for name in panel_cams.names}
+                panel_recorder.add(images, _panel_status(n, float(rew[0]), float(ep_reward[0])))
+                frames_written += 1
+            else:
+                frame = gym_env.render()
+                if frame is None:
+                    sys.exit("[ERROR] env.render() returned None — rgb_array "
+                             "video_recorder/visualizer not active; cannot record.")
+                hud_frame = hud.draw(
+                    frame, step=n, actions=actions[0].cpu().numpy(),
+                    obs={k: v[0].cpu().numpy() for k, v in obs.items()},
+                    step_reward=float(rew[0]), ep_reward=float(ep_reward[0]))
+                if writer is not None:
+                    writer.append_data(hud_frame)
+                    frames_written += 1
+
+            # ---- trace ------------------------------------------------
+            trace["actions"].append(actions.cpu().numpy())
+            trace["rewards"].append(rew.cpu().numpy())
+            trace["dones"].append(dones.cpu().numpy())
+            trace["root_pos"].append(robot.data.root_pos_w.torch[:, :3].cpu().numpy())
+            trace["root_lin_vel"].append(robot.data.root_lin_vel_w.torch[:, :3].cpu().numpy())
+            if _has_feet:
+                trace["foot_pos"].append(
+                    robot.data.body_pos_w.torch[:, _foot_ids, :].cpu().numpy())
+                trace["foot_contact_n"].append(
+                    _sensor.data.net_forces_w.torch[:, _sensor_ids, :]
+                    .norm(dim=-1).cpu().numpy())
+            for k, v in obs.items():
+                trace.setdefault(f"obs_{k}", []).append(v.cpu().numpy())
+
+            if n % 100 == 0:
+                print(f"[rec {n:5d}/{args_cli.steps}] step_rew={float(rew.mean()):+.4f} "
+                      f"ep_rew={float(ep_reward.mean()):+.2f}")
+
+    if panel_recorder is not None:
+        panel_recorder.close()
+        panel_cams.close()
+        print(f"[INFO] panel video saved -> {args_cli.video_out} ({frames_written} frames)")
+    if kb is not None:
+        # Releases the X11 display grab; without it the next keyboard session in
+        # the same X session can fail to open the keyboard.
+        kb.close()
+        print("[INFO] keyboard released")
+    if writer is not None:
+        writer.close()
+        print(f"[INFO] video saved -> {args_cli.video_out} "
+              f"({frames_written} frames)")
+    if args_cli.trace_out:
+        os.makedirs(os.path.dirname(os.path.abspath(args_cli.trace_out)),
+                    exist_ok=True)
+        # skip empty lists (junk keys from the TensorDict reset-iteration era)
+        # Keep traces in float32: actions/observations can exceed float16 range
+        # and previously overflowed to inf during gait validation.
+        out = {k: np.stack(v).astype(np.float32) for k, v in trace.items() if v}
+        # Metadata, not a per-step array: the writer above casts everything to
+        # float32, so the foot order and the swing threshold have to travel as
+        # scalars or the save fails on a string dtype.
+        if _has_feet:
+            out["foot_names"] = np.array(FOOT_BODIES)
+            out["foot_contact_max_n"] = np.array(FOOT_CONTACT_MAX_N)
+        np.savez_compressed(args_cli.trace_out, **out)
+        print(f"[INFO] trace saved -> {args_cli.trace_out}")
+
+    # -- TorchScript / ONNX export (same parity checks as play.py) ---------
+    if args_cli.export:
+        jit = policy.as_jit()
+        jit = getattr(jit, "cpu", lambda: jit)()
+        os.makedirs(os.path.dirname(os.path.abspath(args_cli.export)),
+                    exist_ok=True)
+        if args_cli.disable_jit:
+            torch.save(jit.state_dict(), args_cli.export)
+            print(f"[INFO] raw state-dict saved -> {args_cli.export}")
+        else:
+            scripted = torch.jit.script(jit)
+            scripted.save(args_cli.export)
+            print(f"[INFO] TorchScript saved -> {args_cli.export}")
+            # Parity: scripted runs on CPU; the LIVE policy may still be on
+            # CUDA (as_jit() can return a copy whose .cpu() doesn't move it),
+            # so send the ref input to the policy's own device.
+            flat_obs = torch.cat([obs[k] for k in export_groups], dim=-1).cpu()
+            dev = next(policy.parameters()).device
+            ref = policy({k: obs[k].to(dev) for k in export_groups})
+            got = scripted(flat_obs)
+            err = (ref.cpu() - got).abs().max().item()
+            print(f"[INFO] JIT parity max|Δa| = {err:.2e}")
+
+    if args_cli.export_onnx:
+        os.makedirs(os.path.dirname(os.path.abspath(args_cli.export_onnx)),
+                    exist_ok=True)
+        onnx_model = policy.as_onnx(verbose=False).cpu()
+        flat_obs = torch.cat([obs[k] for k in export_groups], dim=-1).cpu()
+        torch.onnx.export(onnx_model, flat_obs[:1], args_cli.export_onnx)
+        print(f"[INFO] ONNX saved -> {args_cli.export_onnx}")
+
+    print("=" * 60)
+    print(f"Recorded {args_cli.steps} steps x {args_cli.num_envs} envs "
+          f"({'distill student' if is_distill else 'ppo'})")
+    print("=" * 60)
+    env.close()
+
+
+if __name__ == "__main__":
+    main()
+    simulation_app.close()

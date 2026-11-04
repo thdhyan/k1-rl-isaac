@@ -1,0 +1,189 @@
+"""K1 box-push (P6) environments — hierarchical: frozen squat base + wrist IK.
+
+v3 (Phase-0 degenerate-audit fixes A1-A15):
+
+- Action (10): [vx, vy, wz, H*] command slice | left wrist EE position delta
+  (3) | right (3). The 4-dim slice drives the FROZEN squat-capable base
+  teacher (TorchScript export; its 236-dim obs is assembled inside
+  FrozenBaseVelocityAction in the exact squat TeacherCfg order, H* maps to
+  the command-relative height terms); legacy partial mode keeps a 3-dim
+  slice (68-dim obs, legs+head). Each wrist slice drives a
+  DifferentialInverseKinematicsAction term (EE = the hand link).
+- Box: 1 m prototype cube, per-env size 0.7-1.5x, mass 3-25 kg, friction
+  0.3-1.2 (USD-time DR, fixed per env), semi-transparent green; spawns in an
+  annulus r in [0.9, 1.4] m with full yaw.
+- Goal: FIXED randomized pose per episode (distance 0.3 -> 1.5 m + yaw
+  +-30 -> +-180 deg on phased curricula) - no env-owned integrator; corner
+  and corner-centroid tracking against the goal pose are the primary
+  rewards; success = mean corner error < 0.08 m held 1 s (sparse +50),
+  failures = tip > 45 deg / box OOB / height < H* - 0.05 (-200).
+- Obs group is named TeacherCfg (fully observable by design: mass, size,
+  corners, goal pose/corners) - matches the deployability test's privileged
+  convention.
+"""
+import gymnasium as gym
+
+gym.register(
+    id="Isaac-Push-Reach-K1-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "k1_velocity.tasks.push.push_env_cfg:K1PushReachEnvCfg",
+        "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushReachPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Isaac-Push-K1-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "k1_velocity.tasks.push.push_env_cfg:K1PushEnvCfg",
+        "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushPPORunnerCfg",
+    },
+)
+
+
+# Arm-contact SG reward set, ported from the Push-Things reference and adapted to
+# wrist contact (see push_rewards_sg for why the geometry differs). Registered as a
+# SEPARATE pair so it A/Bs against the v3 corner-goal set on the same frozen base
+# rather than overwriting the reward set every recorded run used.
+gym.register(
+    id="Isaac-Push-Reach-SG-K1-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "k1_velocity.tasks.push.push_sg_env_cfg:K1PushReachSGEnvCfg",
+        "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushReachPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Isaac-Push-SG-K1-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "k1_velocity.tasks.push.push_sg_env_cfg:K1PushSGEnvCfg",
+        "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushPPORunnerCfg",
+    },
+)
+
+
+# Play variants: small env count, no observation corruption, no curriculum. Used to
+# render the environment and to run it with an UNTRAINED actor, so the scene can be
+# verified before any training exists.
+gym.register(
+    id="Isaac-Push-SG-K1-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "k1_velocity.tasks.push.push_sg_env_cfg:K1PushSGPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Isaac-Push-Reach-SG-K1-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "k1_velocity.tasks.push.push_sg_env_cfg:K1PushReachSGPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushReachPPORunnerCfg",
+    },
+)
+
+# Multi-robot push (M1): two K1s, one shared box, each robot driven by the trained
+# single-robot push policy (play_record.py --multi_robot stacks the teacher_k groups).
+gym.register(
+    id="Isaac-Push-Multi-K1-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "k1_velocity.tasks.push.push_multi_env_cfg:K1PushMultiPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushPPORunnerCfg",
+    },
+)
+
+# Multi-robot push training (M2): agents-in-batch, one shared actor over both robots
+# (train.py wraps in AgentsInBatchWrapper because env_cfg.agents_in_batch > 0).
+gym.register(
+    id="Isaac-Push-Multi-K1-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "k1_velocity.tasks.push.push_multi_env_cfg:K1PushMultiTrainEnvCfg",
+        "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushMultiPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Isaac-Push-Multi-K1-Train-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "k1_velocity.tasks.push.push_multi_env_cfg:K1PushMultiTrainPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushMultiPPORunnerCfg",
+    },
+)
+
+# Simplified push rewards (hands to box, box to goal, do not fall) + box/goal distance
+# curriculum; see push_simple_env_cfg.py.
+gym.register(
+    id="Isaac-Push-Simple-K1-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "k1_velocity.tasks.push.push_simple_env_cfg:K1PushSimpleEnvCfg",
+        "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushSimplePPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Isaac-Push-Simple-K1-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "k1_velocity.tasks.push.push_simple_env_cfg:K1PushSimplePlayEnvCfg",
+        "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushSimplePPORunnerCfg",
+    },
+)
+
+# Push v4: face-anchored absolute-IK arms (2 dims per arm), stub-tip rewards, progress
+# gated on arm contact, trunk/head-near-box penalty; see push_arms_env_cfg.py.
+for _id, _cfg in (("Isaac-Push-Arms-K1-v0", "K1PushArmsEnvCfg"),
+                  ("Isaac-Push-Arms-K1-Play-v0", "K1PushArmsPlayEnvCfg")):
+    gym.register(
+        id=_id,
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"k1_velocity.tasks.push.push_arms_env_cfg:{_cfg}",
+            "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushArmsPPORunnerCfg",
+        },
+    )
+
+# Push v5: one-hand progress gate, no box_near_goal, softer arm-vel penalty.
+for _id, _cfg in (("Isaac-Push-ArmsV5-K1-v0", "K1PushArmsV5EnvCfg"),
+                  ("Isaac-Push-ArmsV5-K1-Play-v0", "K1PushArmsV5PlayEnvCfg")):
+    gym.register(
+        id=_id,
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"k1_velocity.tasks.push.push_arms_env_cfg:{_cfg}",
+            "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushArmsV5PPORunnerCfg",
+        },
+    )
+
+# Push v6: + torso-to-box, pointing, contact bonus, still-far penalty; spawns start 0.5-0.65 m.
+for _id, _cfg in (("Isaac-Push-ArmsV6-K1-v0", "K1PushArmsV6EnvCfg"),
+                  ("Isaac-Push-ArmsV6-K1-Play-v0", "K1PushArmsV6PlayEnvCfg")):
+    gym.register(
+        id=_id,
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"k1_velocity.tasks.push.push_arms_env_cfg:{_cfg}",
+            "rsl_rl_cfg_entry_point": "k1_velocity.tasks.push.agents.rsl_rl_ppo_cfg:K1PushArmsV6PPORunnerCfg",
+        },
+    )

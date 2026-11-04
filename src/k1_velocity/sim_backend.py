@@ -1,0 +1,155 @@
+# Copyright (c) 2026, The Isaac Lab Project Developers. Booster K1 by thdhyan.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Physics backend selection for K1 tasks.
+
+Selection via env var ``K1_PHYSICS``:
+
+* ``newton`` (default) — ``sim.physics = NewtonCfg()`` (isaaclab_newton; the
+  default solver is MJWarp, i.e. MuJoCo-Warp).
+* ``physx`` (opt-in) — leave ``sim.physics`` unset; the launcher's automatic
+  selector resolves it to PhysX. Required to resume any PhysX-trained checkpoint.
+
+**Decision 2026-10-23 (user-requested): Newton is the standard backend.** Every
+PhysX-trained K1 policy collapsed in MuJoCo sim-to-sim; training on the
+MuJoCo-family solver keeps policies on the contact/actuator model they are
+validated in. Supersedes the 2026-09-22 PhysX-for-all-local-runs decision,
+whose measurements still hold: Newton ~2.5–3× slower on the RTX 4060 @256 envs
+(4.8–5.0 vs 1.6–2.1 s/iter), and PhysX→Newton checkpoint transfer explodes to
+NaN within one iteration (fresh Newton policies are stable) — so resumes of
+PhysX checkpoints must set ``K1_PHYSICS=physx``.
+
+Called from each env cfg's ``__post_init__`` as ``apply_physics_backend(self)``.
+``isaaclab_newton`` imports are pxr-free (verified), so this is safe before
+SimulationApp starts.
+
+Newton workaround: ``ContactSensorCfg.filter_prim_paths_expr=["/World/ground"]``
+crashes Newton sensor init ("No bodies matched the counterpart pattern(s)" —
+the ground plane is not a body label in the Newton model).  The filter is
+semantically inert for our tasks: every consumer reads **net** forces
+(``net_normal_forces_w_history`` — all contacts in PhysX too) and air/contact
+timers; ``filtered_forces``/``force_matrix``/``contact_pos`` are never read
+(verified in k1_velocity).  So we clear filter exprs under Newton only.
+"""
+from __future__ import annotations
+
+import os
+
+from isaaclab.sim import SimulationCfg
+
+
+#: Aggregate pairs to budget per environment. The observed demand at 8192 envs is
+#: ~256 pairs/env (2 099 817 / 8192); 512 is 2x that, so the buffer does not sit
+#: one contact short of the cap.
+PAIRS_PER_ENV = 512
+#: Floor regardless of env count, so small runs are not raised to a silly size.
+MIN_AGGREGATE_PAIRS = 2**22  # 4 194 304
+#: Found/lost broadphase buffers per env. Lower-body walk at 8192 envs (2026-10-16) asked for
+#: 2 897 275 found/lost pairs (~354/env) and 62 914 502 found/lost aggregate pairs (~7 680/env)
+#: against the 2**21 / 2**25 defaults; budgets below leave headroom.
+FOUND_LOST_PAIRS_PER_ENV = 512
+FOUND_LOST_AGGREGATE_PAIRS_PER_ENV = 16384  # a 2nd 8192 smoke asked 86.9M (~10 600/env)
+
+
+def ensure_physx_gpu_capacity(env_cfg) -> int:
+    """Raise the GPU broadphase pair buffer so contacts are not silently dropped.
+
+    PhysX allocates its GPU aggregate-pair buffer once, from
+    ``gpu_total_aggregate_pairs_capacity``, which defaults to ``2**21``.  When
+    demand exceeds it the broadphase does NOT fail loudly -- it logs, once per
+    physics step::
+
+        PhysX error: The application needs to increase
+        PxGpuDynamicsMemoryConfig::totalAggregatePairsCapacity to 2099817
+        , otherwise, the simulation will miss interactions
+
+    and then **drops contacts**, so feet pass through the ground and the policy
+    trains against a wrong contact model.
+
+    This is not hypothetical and it was badly misdiagnosed twice.  At 8192 envs
+    with the corrected ankle gains the K1 generates 2 099 817 pairs against the
+    2 097 152 default -- short by 2 665, i.e. 0.13% -- and the resulting error
+    flood cost roughly 6x wall-clock (3.1-5.0 s/iter with 1 logged error, versus
+    20-32 s/iter with 1392).  The overflow tracks *env count and contact
+    activity*, not the gains: a 2048-env A/B of the same two gain settings showed
+    a 0.3% difference because 2048 envs never reach the cap.  That is why the gains
+    looked innocent at 2048 and guilty at 8192.
+
+    Hence sizing from ``num_envs`` rather than hardcoding a constant: a run at
+    16 384 envs would otherwise silently start dropping contacts again.
+
+    WHERE THE KNOB LIVES.  There is no ``sim.physx``.  ``SimulationCfg`` has a
+    single ``physics: PhysicsCfg | None`` field, and under PhysX it is still
+    ``None`` when ``__post_init__`` runs -- ``SimulationContext`` fills it in
+    later via ``_resolve_physics_cfg``::
+
+        if physics_cfg is None:
+            physics_cfg = PhysxCfg()          # <- defaults, incl. 2**21
+
+    So mutating a ``sim.physx`` attribute is silently a no-op.  The only way to
+    change the default from an env cfg is to *supply* the ``PhysxCfg`` ourselves,
+    which is what this does.  ``isaaclab_physx.physics`` is ``lazy_export()`` and
+    pulls no pxr at import time, so doing this before SimulationApp starts is
+    safe -- the same property ``apply_physics_backend`` relies on for Newton.
+
+    Returns the capacity now configured, or 0 when not applicable (Newton, or a
+    physics cfg predating these knobs).
+    """
+    physics = getattr(env_cfg.sim, "physics", None)
+    if physics is None:
+        # PhysX default path: SimulationContext would build a stock PhysxCfg here.
+        try:
+            from isaaclab_physx.physics import PhysxCfg
+        except ImportError:  # pragma: no cover - backend not installed
+            return 0
+        physics = PhysxCfg()
+        env_cfg.sim.physics = physics
+    if not hasattr(physics, "gpu_total_aggregate_pairs_capacity"):
+        return 0  # Newton (or an older cfg): the GPU broadphase knobs do not apply
+    num_envs = int(getattr(env_cfg.scene, "num_envs", 0) or 0)
+    want = max(MIN_AGGREGATE_PAIRS, num_envs * PAIRS_PER_ENV)
+    if physics.gpu_total_aggregate_pairs_capacity < want:
+        physics.gpu_total_aggregate_pairs_capacity = want
+    for knob, per_env in (("gpu_found_lost_pairs_capacity", FOUND_LOST_PAIRS_PER_ENV),
+                          ("gpu_found_lost_aggregate_pairs_capacity", FOUND_LOST_AGGREGATE_PAIRS_PER_ENV)):
+        if hasattr(physics, knob) and getattr(physics, knob) < num_envs * per_env:
+            setattr(physics, knob, num_envs * per_env)
+    return int(physics.gpu_total_aggregate_pairs_capacity)
+
+
+def apply_physics_backend(env_cfg) -> str:
+    """Select the physics backend on ``env_cfg`` from ``$K1_PHYSICS``.
+
+    Sets ``env_cfg.sim.physics`` and, under Newton, clears contact-sensor
+    per-partner filters (see module docstring).  Returns the backend name.
+    """
+    backend = os.environ.get("K1_PHYSICS", "newton").lower()
+    if backend == "newton":
+        from isaaclab_newton.physics import NewtonCfg
+
+        env_cfg.sim.physics = NewtonCfg()
+        _clear_contact_filters(env_cfg.scene)
+    elif backend != "physx":
+        raise ValueError(f"K1_PHYSICS must be 'newton' or 'physx', got {backend!r}")
+    return backend
+
+
+def _clear_contact_filters(scene_cfg) -> None:
+    """Clear ``filter_prim_paths_expr`` on every sensor cfg in the scene cfg.
+
+    Duck-typed walk over the scene configclass fields so each task family
+    (velocity/basic/kick) is covered without per-cfg edits.
+
+    Fields are read from the instance ``__dict__`` directly: plain ``getattr``
+    on e.g. the scene's ``class_type: ResolvableString`` triggers its lazy
+    ``__getattr__`` template resolution, which imports 43 pxr modules
+    pre-SimulationApp (the Kit-poisoning failure mode from the G2 video bug).
+    """
+    for value in vars(scene_cfg).values():
+        if isinstance(value, list):
+            continue
+        fields = getattr(value, "__dict__", None)
+        if not isinstance(fields, dict):
+            continue
+        if fields.get("filter_prim_paths_expr"):
+            value.filter_prim_paths_expr = []

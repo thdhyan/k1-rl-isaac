@@ -1,0 +1,31 @@
+# Copyright (c) 2026, The Isaac Lab Project Developers. Booster K1 by thdhyan.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Gym-registration callback for the unified Isaac Lab 3.0 CLI.
+
+The unified entrypoint (``isaaclab train --rl_library rsl_rl``) only imports
+``isaaclab_tasks`` / ``isaaclab_tasks_experimental``; third-party task packages
+must register themselves through the ``--external_callback`` hook, which is
+invoked before the preset CLI reads Gym metadata::
+
+    isaaclab train --rl_library rsl_rl \
+        --task Isaac-Velocity-Rough-K1-v0 \
+        --external_callback k1_velocity.register_tasks.register_tasks ...
+"""
+
+
+def register_tasks() -> list[str]:
+    """Import task packages so their ``gym.register`` calls run.
+
+    Returns:
+        Additional CLI args to merge (none — all args come from the command line).
+    """
+    import k1_velocity.tasks.velocity  # noqa: F401 — registers velocity task family
+    import k1_velocity.tasks.basic  # noqa: F401 — registers P1 BASIC task family
+    import k1_velocity.tasks.partial  # noqa: F401 — registers partial-control (legs+head) task family
+    import k1_velocity.tasks.kick  # noqa: F401 — registers P4 kick task family
+    import k1_velocity.tasks.head  # noqa: F401 — registers P3 head-tracking task family
+    import k1_velocity.tasks.push  # noqa: F401 — registers P6 box-push task family
+    import k1_velocity.tasks.carry  # noqa: F401 — registers P7 box-carry task family
+    import k1_velocity.tasks.skills  # noqa: F401 — registers P8/P9 residual skills (ball track, kick)
+    return []
