@@ -9,6 +9,24 @@ Isaac Lab tasks (velocity, push, kick, COMPASS) and Isaac sim nodes.
 | Files / LOC | 213 files · 30,838 lines (py, sh, cpp) |
 | Part of | [k1-workspace](https://github.com/thdhyan/k1-workspace) (architecture and layering rules live there) |
 
+## Where it sits
+
+```mermaid
+flowchart TB
+  k1_common[k1-common]
+  k1_utils[k1-utils]
+  k1_runtime[k1-runtime]
+  k1_rl_isaac((k1-rl-isaac))
+  style k1_rl_isaac fill:#e8833a,color:#000
+  k1_rl_isaac --> k1_common
+  k1_rl_isaac --> k1_utils
+  k1_rl_isaac --> k1_runtime
+```
+
+Used by: nothing (top layer).
+
+![k1-workspace layers](https://raw.githubusercontent.com/thdhyan/k1-workspace/main/docs/img/architecture.png)
+
 ## Install
 
 ```bash
@@ -20,6 +38,7 @@ uv sync
 ## Layout
 
 ```
+README.md
 docs/  (3 files)
   legacy_README.md
   legacy_pyproject.toml
