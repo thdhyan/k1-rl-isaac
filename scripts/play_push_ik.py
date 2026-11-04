@@ -10,7 +10,6 @@ import argparse
 import math
 import os
 import sys
-from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
@@ -41,14 +40,14 @@ from isaaclab.utils import configclass  # noqa: E402
 from k1_velocity.assets_mjlab import K1_MJLAB_CFG  # noqa: E402
 from k1_velocity.sim_backend import apply_physics_backend  # noqa: E402
 
-WS = Path(__file__).resolve().parents[3]
 from k1_runtime.push_ik_core import PushIKController, box_errors  # noqa: E402
 from k1_runtime import wbc  # noqa: E402
+import k1_description  # noqa: E402
 
 HALF = (0.275, 0.55, 0.22)  # mid of the training size ranges
 BOX_KG, BOX_MU = 3.5, 0.45  # mid of the training ranges
 TIME_S, OOB_R, TIP, FELL, SUCCESS_V = 30.0, 5.0, math.radians(30.0), math.radians(70.0), 0.15
-USD = os.environ.get("K1_SOLID_USD", str(WS / "src/k1_description/assets/robots/K1/usd_mjlab/K1_22dof_mjlab_solid/K1_22dof_mjlab_solid.usda"))
+USD = os.environ.get("K1_SOLID_USD") or str(k1_description.robot_file(k1_description.USD_MJLAB_SOLID))
 
 
 def k1(path: str):

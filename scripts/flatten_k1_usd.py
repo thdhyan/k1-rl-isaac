@@ -15,7 +15,6 @@ Run from workspace root with venv-isaac python:
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
@@ -34,6 +33,7 @@ from isaaclab.scene import InteractiveScene, InteractiveSceneCfg  # noqa: E402
 from isaaclab.utils import configclass  # noqa: E402
 
 from booster_train.assets.robots.booster import BOOSTER_K1_CFG  # noqa: E402
+import k1_description  # noqa: E402
 from pxr import UsdPhysics, Sdf  # noqa: E402
 import omni.usd  # noqa: E402
 
@@ -147,7 +147,7 @@ def main():
     apply_contact_apis_recursive(robot_prim)
 
     # Step 3: Export the stage
-    output_dir = Path("/home/thakk100/Projects/booster_ws/src/k1_description/assets/robots/K1")
+    output_dir = k1_description.assets_dir() / "robots" / "K1"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "K1_flat.usd"
 

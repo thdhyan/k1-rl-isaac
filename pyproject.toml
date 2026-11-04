@@ -14,12 +14,14 @@ dependencies = [
   "torch",
   "k1-common",
   "k1-utils",
+  "k1-description",
   "k1-runtime",
 ]
 
 [tool.uv.sources]
 k1-common = { git = "https://github.com/thdhyan/k1-common" }
 k1-utils = { git = "https://github.com/thdhyan/k1-utils" }
+k1-description = { git = "https://github.com/thdhyan/k1-description" }
 k1-runtime = { git = "https://github.com/thdhyan/k1-runtime" }
 
 [build-system]
@@ -32,3 +34,7 @@ packages = ["src/compass_k1", "src/k1_kicking", "src/k1_velocity"]
 # booster_train: submodule third_party/booster_train (pip install -e third_party/booster_train/source/booster_train).
 # Provided by the environment (ROS 2, Isaac Sim/Lab, mjlab, robot SDK) or not on PyPI under this name:
 # Xlib, booster_assets, booster_train, carb, cli_args, geometry_msgs, imageio_ffmpeg, isaaclab, isaaclab_newton, isaaclab_physx, isaaclab_rl, isaaclab_tasks, isaaclab_visualizers, isaacsim, keyboard_cmd, launch, launch_ros, mobility_es, omni, panel_video, ppo_guard, pxr, rclpy, rsl_rl, sensor_msgs, skrl, tensordict, ultralytics
+
+[tool.pytest.ini_options]
+markers = ["isaac: needs Isaac Lab (isaaclab, gymnasium); run on a GPU host with -m isaac"]
+addopts = "-m 'not isaac'"

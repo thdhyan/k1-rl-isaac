@@ -21,7 +21,7 @@ import sys
 # ── Environment setup ────────────────────────────────────────────────
 os.environ.setdefault("ROS_DOMAIN_ID", "0")
 os.environ.setdefault("CYCLONEDDS_URI",
-                      "file:///home/thakk100/.cyclonedds/cyclonedds.xml")
+                      "file://" + os.path.expanduser("~/.cyclonedds/cyclonedds.xml"))
 
 CORE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))), "..")
@@ -186,12 +186,13 @@ except ImportError:
     from isaaclab.assets import ArticulationCfg
     from isaaclab.actuators import ImplicitActuatorCfg
     import isaaclab.sim as _sim_utils
+    import k1_description
 
     K1_ARTICULATION_CFG = ArticulationCfg(
         spawn=_sim_utils.UrdfFileCfg(
             fix_base=False,
             replace_cylinders_with_capsules=False,
-            asset_path="/workspace/booster_ws/src/k1_description/assets/robots/K1/K1_22dof.urdf",
+            asset_path=str(k1_description.robot_file(k1_description.URDF)),
             activate_contact_sensors=True,
             rigid_props=_sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=False,

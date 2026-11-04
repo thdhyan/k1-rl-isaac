@@ -13,17 +13,16 @@ from __future__ import annotations
 
 import math
 import os
-from pathlib import Path
 
 import isaaclab.sim as sim_utils
+import k1_description
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg
 
-_USD_DIR = Path(__file__).resolve().parents[4] / "src/k1_description/assets/robots/K1/usd_mjlab"
-K1_MJLAB_USD = os.environ.get("K1_MJLAB_USD", str(_USD_DIR / "K1_22dof_mjlab/K1_22dof_mjlab.usda"))
+K1_MJLAB_USD = os.environ.get("K1_MJLAB_USD") or str(k1_description.robot_file(k1_description.USD_MJLAB))
 #: same model plus Booster's arm/hand collision meshes (``scripts_export_mjcf.py --arms``), for push/carry
 K1_MJLAB_ARMS_USD = os.environ.get(
-    "K1_MJLAB_ARMS_USD", str(_USD_DIR / "K1_22dof_mjlab_arms/K1_22dof_mjlab_arms.usda"))
+    "K1_MJLAB_ARMS_USD") or str(k1_description.robot_file(k1_description.USD_MJLAB_ARMS))
 
 #: canonical leg order = mjlab model order (also the deploy / ROS order)
 LEG_JOINTS = [
